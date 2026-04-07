@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 
 // ─── DATA ───
 const WEEKS_HM = [
@@ -282,16 +282,40 @@ const WEEKS_10K = [
 const typeIcons = { easy: "🟢", interval: "🔴", long: "🔵" };
 const phaseEmoji = { Baza: "🧱", Gradnja: "📈", Peak: "🔥", Taper: "🧘", "Race Week": "🏁" };
 
-// ─── STORAGE HELPERS ───
-function loadLogs(key) {
+// ─── REMOTE STORAGE (KV via Cloudflare Functions) with localStorage fallback ───
+const API_BASE = "/api/logs";
+
+async function remoteFetch(key) {
   try {
-    const raw = localStorage.getItem(key);
-    return raw ? JSON.parse(raw) : {};
-  } catch { return {}; }
+    const res = await fetch(`${API_BASE}?key=${encodeURIComponent(key)}`);
+    if (!res.ok) throw new Error("fetch failed");
+    const data = await res.json();
+    return data.value || {};
+  } catch {
+    // Fallback to localStorage
+    try { return JSON.parse(localStorage.getItem(key) || "{}"); } catch { return {}; }
+  }
 }
 
-function saveLogs(key, logs) {
-  try { localStorage.setItem(key, JSON.stringify(logs)); } catch {}
+async function remoteSave(key, value) {
+  // Always save locally as cache
+  try { localStorage.setItem(key, JSON.stringify(value)); } catch {}
+  // Then sync to remote
+  try {
+    const res = await fetch(API_BASE, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ key, value }),
+    });
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
+async function remoteDelete(key) {
+  try { localStorage.removeItem(key); } catch {}
+  try { await fetch(`${API_BASE}?key=${encodeURIComponent(key)}`, { method: "DELETE" }); } catch {}
 }
 
 // ─── ANALYSIS ENGINE ───
@@ -307,10 +331,6 @@ function fmtPace(dec) {
   const m = Math.floor(dec);
   const s = Math.round((dec - m) * 60);
   return `${m}:${s.toString().padStart(2, "0")}`;
-}
-
-function fmtTime(str) {
-  return str || "-";
 }
 
 function analyzeWorkout(planned, actual) {
@@ -366,10 +386,7 @@ function generateRecommendations(allLogs, weeks) {
   const logged = Object.entries(allLogs).filter(([_, v]) => v.distance && v.pace);
   if (logged.length < 2) return ["Unesi podatke sa bar 2 treninga za personalizovane preporuke."];
 
-  let totalScore = 0;
-  let fastCount = 0;
-  let slowCount = 0;
-  let highHrEasy = 0;
+  let totalScore = 0, fastCount = 0, slowCount = 0, highHrEasy = 0;
 
   logged.forEach(([key, actual]) => {
     const [wn, wi] = key.split("-").map(Number);
@@ -388,28 +405,27 @@ function generateRecommendations(allLogs, weeks) {
   });
 
   const avg = totalScore / logged.length;
+  if (avg > 1.0) recs.push("🚀 NAPREDAK IZNAD OČEKIVANJA! Razmisli o bržim ciljevima — intervale podesi 5-10s/km brže.");
+  else if (avg > 0.5) recs.push("✅ Odličan napredak — plan radi. Nastavi istim tempom.");
+  else if (avg > -0.3) recs.push("⚡ Solidno ali ima prostora. Fokus na konzistentnost tempa.");
+  else recs.push("⚠️ Treninzi ispod plana. Smanji tempo za 10-15s/km u narednoj sedmici.");
 
-  if (avg > 1.0) recs.push("🚀 NAPREDAK IZNAD OČEKIVANJA! Razmisli o bržim ciljevima: HM sub 2:03, intervale podesi 5-10s/km brže.");
-  else if (avg > 0.5) recs.push("✅ Odličan napredak — plan radi. Nastavi istim tempom, cilj je realan.");
-  else if (avg > -0.3) recs.push("⚡ Solidno ali ima prostora. Fokusiraj se na konzistentnost tempa tokom intervala.");
-  else recs.push("⚠️ Treninzi su ispod plana. Razmisli o smanjenju tempa za 10-15s/km u narednoj sedmici.");
-
-  if (fastCount >= 2) recs.push("📈 Više puta si bio brži od plana — odlično! Naredne intervale možeš podići za 5s/km.");
-  if (slowCount >= 2) recs.push("📉 Nekoliko treninga je bilo sporije. Provjeri san, ishranu i hidraciju.");
-  if (highHrEasy > 0) recs.push("💓 HR na easy runovima je previsok. Uspori! Easy run je temelj — treba biti zaista lagan.");
+  if (fastCount >= 2) recs.push("📈 Više puta brži od plana! Naredne intervale podići za 5s/km.");
+  if (slowCount >= 2) recs.push("📉 Nekoliko sporijih treninga. Provjeri san, ishranu, hidraciju.");
+  if (highHrEasy > 0) recs.push("💓 HR na easy runovima previsok. Uspori — easy run je temelj!");
 
   return recs;
 }
 
 // ─── UI COMPONENTS ───
-function InputField({ label, value, onChange, placeholder, suffix }) {
+function InputField({ label, value, onChange, placeholder, suffix, inputMode = "text" }) {
   return (
     <div style={{ flex: 1, minWidth: 0 }}>
       <div style={{ fontSize: 10, color: "#64748B", marginBottom: 3, textTransform: "uppercase", letterSpacing: 1 }}>{label}</div>
       <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
         <input
           type="text"
-          inputMode="decimal"
+          inputMode={inputMode}
           value={value}
           onChange={(e) => onChange(e.target.value)}
           placeholder={placeholder}
@@ -429,16 +445,16 @@ function LogForm({ log, onUpdate }) {
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 8, padding: "10px 0" }}>
       <div style={{ display: "flex", gap: 8 }}>
-        <InputField label="Distanca" value={log.distance || ""} onChange={(v) => onUpdate({ ...log, distance: v })} placeholder="8.2" suffix="km" />
-        <InputField label="Vrijeme" value={log.time || ""} onChange={(v) => onUpdate({ ...log, time: v })} placeholder="54:30" suffix="" />
+        <InputField label="Distanca" value={log.distance || ""} onChange={(v) => onUpdate({ ...log, distance: v })} placeholder="8.2" suffix="km" inputMode="decimal" />
+        <InputField label="Vrijeme" value={log.time || ""} onChange={(v) => onUpdate({ ...log, time: v })} placeholder="54:30" suffix="" inputMode="text" />
       </div>
       <div style={{ display: "flex", gap: 8 }}>
-        <InputField label="Avg Pace" value={log.pace || ""} onChange={(v) => onUpdate({ ...log, pace: v })} placeholder="6:38" suffix="/km" />
-        <InputField label="Avg HR" value={log.hr || ""} onChange={(v) => onUpdate({ ...log, hr: v })} placeholder="148" suffix="bpm" />
+        <InputField label="Avg Pace" value={log.pace || ""} onChange={(v) => onUpdate({ ...log, pace: v })} placeholder="6:38" suffix="/km" inputMode="text" />
+        <InputField label="Avg HR" value={log.hr || ""} onChange={(v) => onUpdate({ ...log, hr: v })} placeholder="148" suffix="bpm" inputMode="numeric" />
       </div>
       <div style={{ display: "flex", gap: 8 }}>
-        <InputField label="Elevation" value={log.elevation || ""} onChange={(v) => onUpdate({ ...log, elevation: v })} placeholder="65" suffix="m" />
-        <InputField label="Napomena" value={log.note || ""} onChange={(v) => onUpdate({ ...log, note: v })} placeholder="Osjećaj..." suffix="" />
+        <InputField label="Elevation" value={log.elevation || ""} onChange={(v) => onUpdate({ ...log, elevation: v })} placeholder="65" suffix="m" inputMode="numeric" />
+        <InputField label="Napomena" value={log.note || ""} onChange={(v) => onUpdate({ ...log, note: v })} placeholder="Osjećaj..." suffix="" inputMode="text" />
       </div>
     </div>
   );
@@ -449,28 +465,73 @@ function PlanView({ weeks, accent, gradFrom, gradTo, title, subtitle, info, font
   const [expandedWeek, setExpandedWeek] = useState(null);
   const [expandedWorkout, setExpandedWorkout] = useState(null);
   const [showLog, setShowLog] = useState(null);
-  const [logs, setLogs] = useState(() => loadLogs(storageKey));
+  const [logs, setLogs] = useState({});
   const [showRecs, setShowRecs] = useState(false);
-  const [saveStatus, setSaveStatus] = useState(null);
+  const [syncStatus, setSyncStatus] = useState("loading"); // loading | synced | saving | offline
   const [confirmReset, setConfirmReset] = useState(false);
+  const saveTimer = useRef(null);
 
-  // Save to localStorage whenever logs change
+  // Load from remote on mount
   useEffect(() => {
-    saveLogs(storageKey, logs);
-    const hasData = Object.values(logs).some(l => l.distance || l.pace);
-    if (hasData) {
-      setSaveStatus("saved");
-      const t = setTimeout(() => setSaveStatus(null), 1500);
-      return () => clearTimeout(t);
-    }
-  }, [logs, storageKey]);
+    let cancelled = false;
+    (async () => {
+      const data = await remoteFetch(storageKey);
+      if (!cancelled) {
+        setLogs(data);
+        setSyncStatus("synced");
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [storageKey]);
 
-  const updateLog = (key, data) => setLogs(prev => ({ ...prev, [key]: data }));
+  // Debounced save — 800ms after last edit
+  const debouncedSave = useCallback((newLogs) => {
+    if (saveTimer.current) clearTimeout(saveTimer.current);
+    setSyncStatus("saving");
+    saveTimer.current = setTimeout(async () => {
+      const ok = await remoteSave(storageKey, newLogs);
+      setSyncStatus(ok ? "synced" : "offline");
+    }, 800);
+  }, [storageKey]);
+
+  const updateLog = (key, data) => {
+    setLogs(prev => {
+      const next = { ...prev, [key]: data };
+      debouncedSave(next);
+      return next;
+    });
+  };
+
+  // Pull fresh data when tab becomes visible (e.g. switching back from another app)
+  useEffect(() => {
+    const handler = () => {
+      if (document.visibilityState === "visible") {
+        remoteFetch(storageKey).then(data => {
+          setLogs(data);
+          setSyncStatus("synced");
+        });
+      }
+    };
+    document.addEventListener("visibilitychange", handler);
+    return () => document.removeEventListener("visibilitychange", handler);
+  }, [storageKey]);
 
   const totalWorkouts = weeks.reduce((a, w) => a + w.workouts.length, 0);
   const doneCount = Object.values(logs).filter(l => l.distance && l.pace).length;
   const progress = Math.round((doneCount / totalWorkouts) * 100);
   const recs = generateRecommendations(logs, weeks);
+
+  const syncIcon = { loading: "⏳", synced: "☁️", saving: "💾", offline: "📴" }[syncStatus];
+  const syncText = { loading: "Učitavam...", synced: "Sinhronizovano", saving: "Čuvam...", offline: "Offline režim" }[syncStatus];
+
+  if (syncStatus === "loading") {
+    return (
+      <div style={{ textAlign: "center", padding: "40px 0", color: "#64748B", fontSize: 13 }}>
+        <div style={{ marginBottom: 8, fontSize: 20 }}>⏳</div>
+        Učitavam podatke...
+      </div>
+    );
+  }
 
   return (
     <div>
@@ -481,11 +542,14 @@ function PlanView({ weeks, accent, gradFrom, gradTo, title, subtitle, info, font
           WebkitBackgroundClip: "text", WebkitTextFillColor: "transparent",
         }}>{title}</h2>
         <div style={{ fontSize: 13, color: accent, marginTop: 4 }}>{subtitle}</div>
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 8, marginTop: 2 }}>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 6, marginTop: 3 }}>
           <span style={{ fontSize: 11, color: "#64748B" }}>{info}</span>
-          {saveStatus === "saved" && (
-            <span style={{ fontSize: 10, color: "#34D399", fontWeight: 600 }}>✓ Sačuvano</span>
-          )}
+          <span style={{
+            fontSize: 9, padding: "2px 6px", borderRadius: 4,
+            background: syncStatus === "synced" ? "rgba(52,211,153,0.1)" : syncStatus === "saving" ? "rgba(251,191,36,0.1)" : "rgba(248,113,113,0.1)",
+            color: syncStatus === "synced" ? "#34D399" : syncStatus === "saving" ? "#FBBF24" : "#F87171",
+            fontWeight: 600,
+          }}>{syncIcon} {syncText}</span>
         </div>
       </div>
 
@@ -505,13 +569,8 @@ function PlanView({ weeks, accent, gradFrom, gradTo, title, subtitle, info, font
 
       {/* Recommendations */}
       {doneCount >= 2 && (
-        <div
-          onClick={() => setShowRecs(!showRecs)}
-          style={{
-            marginBottom: 12, borderRadius: 12, overflow: "hidden",
-            border: "1px solid rgba(251,191,36,0.2)", background: "rgba(251,191,36,0.06)", cursor: "pointer",
-          }}
-        >
+        <div onClick={() => setShowRecs(!showRecs)}
+          style={{ marginBottom: 12, borderRadius: 12, overflow: "hidden", border: "1px solid rgba(251,191,36,0.2)", background: "rgba(251,191,36,0.06)", cursor: "pointer" }}>
           <div style={{ padding: "11px 14px", display: "flex", justifyContent: "space-between", alignItems: "center", userSelect: "none" }}>
             <span style={{ fontSize: 13, fontWeight: 700, color: "#FBBF24" }}>🤖 AI Preporuke za plan</span>
             <span style={{ fontSize: 14, color: "#64748B", transform: showRecs ? "rotate(180deg)" : "", transition: "transform 0.2s", display: "inline-block" }}>▾</span>
@@ -519,11 +578,7 @@ function PlanView({ weeks, accent, gradFrom, gradTo, title, subtitle, info, font
           {showRecs && (
             <div style={{ padding: "0 14px 12px" }}>
               {recs.map((r, i) => (
-                <div key={i} style={{
-                  padding: "8px 10px", marginTop: 5, borderRadius: 8,
-                  background: "rgba(255,255,255,0.03)", fontSize: 12,
-                  color: "#E2E8F0", lineHeight: 1.5, borderLeft: "3px solid #FBBF24",
-                }}>{r}</div>
+                <div key={i} style={{ padding: "8px 10px", marginTop: 5, borderRadius: 8, background: "rgba(255,255,255,0.03)", fontSize: 12, color: "#E2E8F0", lineHeight: 1.5, borderLeft: "3px solid #FBBF24" }}>{r}</div>
               ))}
             </div>
           )}
@@ -591,12 +646,9 @@ function PlanView({ weeks, accent, gradFrom, gradTo, title, subtitle, info, font
                         </div>
                         <div style={{ fontSize: 11, color: "#94A3B8", marginTop: 3 }}>Tempo: {w.paceTarget}</div>
                         {hasLog && (
-                          <div style={{
-                            display: "flex", gap: 10, marginTop: 5, fontSize: 10,
-                            color: "#34D399", fontFamily: "'JetBrains Mono', monospace", flexWrap: "wrap",
-                          }}>
+                          <div style={{ display: "flex", gap: 10, marginTop: 5, fontSize: 10, color: "#34D399", fontFamily: "'JetBrains Mono', monospace", flexWrap: "wrap" }}>
                             <span>{log.distance} km</span>
-                            <span>{fmtTime(log.time)}</span>
+                            <span>{log.time || "-"}</span>
                             <span>{log.pace}/km</span>
                             {log.hr && <span>{log.hr} bpm</span>}
                             {log.elevation && <span>⛰️{log.elevation}m</span>}
@@ -608,8 +660,7 @@ function PlanView({ weeks, accent, gradFrom, gradTo, title, subtitle, info, font
                         <div style={{ padding: "0 12px 12px" }}>
                           {w.segments.map((seg, si) => (
                             <div key={si} style={{
-                              padding: "7px 10px", marginTop: 4, borderRadius: 7,
-                              background: "rgba(255,255,255,0.03)",
+                              padding: "7px 10px", marginTop: 4, borderRadius: 7, background: "rgba(255,255,255,0.03)",
                               borderLeft: `3px solid ${seg.name.includes("📍") || seg.name.includes("Zašto") ? "#F59E0B" : seg.name.includes("🔥") ? "#EF4444" : seg.name.includes("⚡") ? "#3B82F6" : seg.name.includes("🧊") ? "#06B6D4" : week.color}`,
                             }}>
                               <div style={{ fontSize: 10, fontWeight: 700, color: "#CBD5E1", marginBottom: 2 }}>{seg.name}</div>
@@ -618,10 +669,7 @@ function PlanView({ weeks, accent, gradFrom, gradTo, title, subtitle, info, font
                           ))}
 
                           {hasLog && analysis && (
-                            <div style={{
-                              marginTop: 8, padding: "10px 12px", borderRadius: 8,
-                              background: "rgba(59,130,246,0.08)", border: "1px solid rgba(59,130,246,0.15)",
-                            }}>
+                            <div style={{ marginTop: 8, padding: "10px 12px", borderRadius: 8, background: "rgba(59,130,246,0.08)", border: "1px solid rgba(59,130,246,0.15)" }}>
                               <div style={{ fontSize: 11, fontWeight: 700, color: "#60A5FA", marginBottom: 6 }}>📊 Analiza treninga</div>
                               {analysis.notes.map((n, ni) => (
                                 <div key={ni} style={{ fontSize: 11, color: "#CBD5E1", lineHeight: 1.5, marginTop: 2 }}>{n}</div>
@@ -629,15 +677,12 @@ function PlanView({ weeks, accent, gradFrom, gradTo, title, subtitle, info, font
                             </div>
                           )}
 
-                          <button
-                            onClick={(e) => { e.stopPropagation(); setShowLog(isLogging ? null : wKey); }}
+                          <button onClick={(e) => { e.stopPropagation(); setShowLog(isLogging ? null : wKey); }}
                             style={{
                               marginTop: 8, width: "100%", padding: "9px", borderRadius: 8, border: "none",
                               background: hasLog ? "rgba(59,130,246,0.12)" : `${week.color}20`,
-                              color: hasLog ? "#60A5FA" : week.color,
-                              fontSize: 12, fontWeight: 600, cursor: "pointer",
-                            }}
-                          >
+                              color: hasLog ? "#60A5FA" : week.color, fontSize: 12, fontWeight: 600, cursor: "pointer",
+                            }}>
                             {isLogging ? "▲ Zatvori" : hasLog ? "✏️ Izmijeni podatke" : "📝 Unesi podatke sa treninga"}
                           </button>
 
@@ -658,13 +703,12 @@ function PlanView({ weeks, accent, gradFrom, gradTo, title, subtitle, info, font
         <div style={{ marginTop: 14 }}>
           {!confirmReset ? (
             <button onClick={() => setConfirmReset(true)}
-              style={{
-                width: "100%", padding: "9px", borderRadius: 8, border: "1px solid rgba(239,68,68,0.15)",
-                background: "rgba(239,68,68,0.06)", color: "#F87171", fontSize: 11, fontWeight: 600, cursor: "pointer",
-              }}>🗑️ Obriši sve unesene podatke</button>
+              style={{ width: "100%", padding: "9px", borderRadius: 8, border: "1px solid rgba(239,68,68,0.15)", background: "rgba(239,68,68,0.06)", color: "#F87171", fontSize: 11, fontWeight: 600, cursor: "pointer" }}>
+              🗑️ Obriši sve unesene podatke
+            </button>
           ) : (
             <div style={{ display: "flex", gap: 6 }}>
-              <button onClick={() => { setLogs({}); setConfirmReset(false); try { localStorage.removeItem(storageKey); } catch {} }}
+              <button onClick={async () => { setLogs({}); setConfirmReset(false); await remoteDelete(storageKey); }}
                 style={{ flex: 1, padding: "9px", borderRadius: 8, border: "none", background: "rgba(239,68,68,0.2)", color: "#FCA5A5", fontSize: 11, fontWeight: 700, cursor: "pointer" }}>
                 Da, obriši sve
               </button>
@@ -690,7 +734,7 @@ export default function App() {
       background: "linear-gradient(170deg, #0B0F1A 0%, #131B2E 40%, #0B0F1A 100%)",
       color: "#E2E8F0",
       fontFamily: "'DM Sans', 'Segoe UI', sans-serif",
-      padding: "20px 14px",
+      padding: "20px 14px 40px",
       maxWidth: 540, margin: "0 auto",
     }}>
       <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;700&family=JetBrains+Mono:wght@400;700&family=Syne:wght@700;800&display=swap" rel="stylesheet" />
@@ -739,8 +783,8 @@ export default function App() {
       )}
 
       <div style={{ textAlign: "center", marginTop: 22, paddingTop: 14, borderTop: "1px solid rgba(255,255,255,0.06)", fontSize: 10, color: "#475569", lineHeight: 1.5 }}>
-        Sedmica → Trening → Detalji → 📝 Unesi podatke → 📊 Analiza<br />
-        Podaci se automatski čuvaju 💾 · AI preporuke nakon 2+ logovanja 🤖
+        Podaci se sinhronizuju između uređaja ☁️<br />
+        📝 Unesi podatke → 📊 Analiza → 🤖 AI preporuke
       </div>
     </div>
   );
