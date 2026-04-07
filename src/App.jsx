@@ -282,15 +282,24 @@ const WEEKS_10K = [
 const typeIcons = { easy: "🟢", interval: "🔴", long: "🔵" };
 const phaseEmoji = { Baza: "🧱", Gradnja: "📈", Peak: "🔥", Taper: "🧘", "Race Week": "🏁" };
 
-// ─── REMOTE STORAGE (KV via Cloudflare Functions) with localStorage fallback ───
-const API_BASE = "/api/logs";
+// ─── FIREBASE REALTIME DATABASE (free, no config needed) ───
+// To set up: go to https://console.firebase.google.com
+// 1. Create project (name: race-tracker)
+// 2. Build → Realtime Database → Create Database → Start in TEST MODE
+// 3. Copy your database URL and paste it below
+const FIREBASE_URL = "https://race-tracker-3946f-default-rtdb.europe-west1.firebasedatabase.app";
 
 async function remoteFetch(key) {
   try {
-    const res = await fetch(`${API_BASE}?key=${encodeURIComponent(key)}`);
+    const res = await fetch(`${FIREBASE_URL}/${encodeURIComponent(key)}.json`);
     if (!res.ok) throw new Error("fetch failed");
     const data = await res.json();
-    return data.value || {};
+    if (data) {
+      // Cache locally
+      try { localStorage.setItem(key, JSON.stringify(data)); } catch {}
+      return data;
+    }
+    return {};
   } catch {
     // Fallback to localStorage
     try { return JSON.parse(localStorage.getItem(key) || "{}"); } catch { return {}; }
@@ -300,12 +309,12 @@ async function remoteFetch(key) {
 async function remoteSave(key, value) {
   // Always save locally as cache
   try { localStorage.setItem(key, JSON.stringify(value)); } catch {}
-  // Then sync to remote
+  // Sync to Firebase
   try {
-    const res = await fetch(API_BASE, {
+    const res = await fetch(`${FIREBASE_URL}/${encodeURIComponent(key)}.json`, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ key, value }),
+      body: JSON.stringify(value),
     });
     return res.ok;
   } catch {
@@ -315,7 +324,7 @@ async function remoteSave(key, value) {
 
 async function remoteDelete(key) {
   try { localStorage.removeItem(key); } catch {}
-  try { await fetch(`${API_BASE}?key=${encodeURIComponent(key)}`, { method: "DELETE" }); } catch {}
+  try { await fetch(`${FIREBASE_URL}/${encodeURIComponent(key)}.json`, { method: "DELETE" }); } catch {}
 }
 
 // ─── ANALYSIS ENGINE ───
