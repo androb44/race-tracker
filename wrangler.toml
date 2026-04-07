@@ -1,7 +1,0 @@
-name = "race-tracker"
-compatibility_date = "2024-12-01"
-pages_build_output_dir = "dist"
- 
-[[kv_namespaces]]
-binding = "RACE_LOGS"
-id = "d494f99978a342f6a554221eb4ed9438"
