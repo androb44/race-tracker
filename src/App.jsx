@@ -418,14 +418,13 @@ function generateRecommendations(allLogs, weeks) {
 }
 
 // ─── UI COMPONENTS ───
-function InputField({ label, value, onChange, placeholder, suffix, inputMode = "text" }) {
+function InputField({ label, value, onChange, placeholder, suffix }) {
   return (
     <div style={{ flex: 1, minWidth: 0 }}>
       <div style={{ fontSize: 10, color: "#64748B", marginBottom: 3, textTransform: "uppercase", letterSpacing: 1 }}>{label}</div>
       <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
         <input
           type="text"
-          inputMode={inputMode}
           value={value}
           onChange={(e) => onChange(e.target.value)}
           placeholder={placeholder}
@@ -445,16 +444,16 @@ function LogForm({ log, onUpdate }) {
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 8, padding: "10px 0" }}>
       <div style={{ display: "flex", gap: 8 }}>
-        <InputField label="Distanca" value={log.distance || ""} onChange={(v) => onUpdate({ ...log, distance: v })} placeholder="8.2" suffix="km" inputMode="decimal" />
-        <InputField label="Vrijeme" value={log.time || ""} onChange={(v) => onUpdate({ ...log, time: v })} placeholder="54:30" suffix="" inputMode="text" />
+        <InputField label="Distanca" value={log.distance || ""} onChange={(v) => onUpdate({ ...log, distance: v })} placeholder="8.2" suffix="km" />
+        <InputField label="Vrijeme" value={log.time || ""} onChange={(v) => onUpdate({ ...log, time: v })} placeholder="54:30" suffix="" />
       </div>
       <div style={{ display: "flex", gap: 8 }}>
-        <InputField label="Avg Pace" value={log.pace || ""} onChange={(v) => onUpdate({ ...log, pace: v })} placeholder="6:38" suffix="/km" inputMode="text" />
-        <InputField label="Avg HR" value={log.hr || ""} onChange={(v) => onUpdate({ ...log, hr: v })} placeholder="148" suffix="bpm" inputMode="numeric" />
+        <InputField label="Avg Pace" value={log.pace || ""} onChange={(v) => onUpdate({ ...log, pace: v })} placeholder="6:38" suffix="/km" />
+        <InputField label="Avg HR" value={log.hr || ""} onChange={(v) => onUpdate({ ...log, hr: v })} placeholder="148" suffix="bpm" />
       </div>
       <div style={{ display: "flex", gap: 8 }}>
-        <InputField label="Elevation" value={log.elevation || ""} onChange={(v) => onUpdate({ ...log, elevation: v })} placeholder="65" suffix="m" inputMode="numeric" />
-        <InputField label="Napomena" value={log.note || ""} onChange={(v) => onUpdate({ ...log, note: v })} placeholder="Osjećaj..." suffix="" inputMode="text" />
+        <InputField label="Elevation" value={log.elevation || ""} onChange={(v) => onUpdate({ ...log, elevation: v })} placeholder="65" suffix="m" />
+        <InputField label="Napomena" value={log.note || ""} onChange={(v) => onUpdate({ ...log, note: v })} placeholder="Osjećaj..." suffix="" />
       </div>
     </div>
   );
